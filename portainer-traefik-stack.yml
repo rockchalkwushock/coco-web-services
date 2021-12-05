@@ -1,0 +1,106 @@
+# Configuration file for setting up Portainer on a system
+# using Docker Swarm with Traefik as a reverse-proxy.
+# Usage:
+# docker network create -d overlay private
+# docker network create -d overlay public
+# docker stack deploy -c /path/to/file.yml portainer
+version: '3.9'
+
+##########################################
+# Networks
+networks:
+  default:
+    driver: bridge
+  private:
+    attachable: true
+    driver: overlay
+    external: true
+    name: private
+  public:
+    driver: overlay
+    external: true
+    name: public
+
+##########################################
+# Services
+services:
+  traefik:
+    image: traefik:latest
+    command:
+      # API
+      - --api
+      # EntryPoints
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # Logs
+      - --log.level=ERROR
+      # Provider
+      - --providers.docker=true
+      - --providers.docker.swarmMode=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=public
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    networks:
+      - public
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro # ro makes the socket read-only
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+
+  agent:
+    image: portainer/agent:latest
+    environment:
+      AGENT_CLUSTER_ADDR: tasks.agent
+    networks:
+      - private
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+    ports:
+      - target: 9443
+        published: 9443
+        protocol: tcp
+        mode: host
+    networks:
+      - private
+      - public
+    volumes:
+      - data:/data
+    deploy:
+      labels:
+        - "traefik.enabled=true"
+        - "traefik.http.routers.portainer.rule=Host(`portainer.codybrunner.xyz`)"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
+        - "traefik.http.services.portainer.loadbalancer.server.port=9443"
+        - "traefik.http.routers.portainer.service=portainer"
+      mode: replicated
+      placement:
+        constraints:
+          - node.role == manager
+      replicas: 1
+
+##########################################
+# Volumes
+volumes:
+  data:
